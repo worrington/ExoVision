@@ -1,26 +1,34 @@
 import * as tf from "@tensorflow/tfjs";
 
-// Normalización automática (Min-Max)
-function normalizeFeature(arr) {
-  const min = Math.min(...arr);
-  const max = Math.max(...arr);
-  return arr.map(v => (v - min) / (max - min || 1));
+// Normaliza un valor usando min-max
+function normalizeValue(value, min, max) {
+  return (value - min) / (max - min || 1);
 }
 
+// Entrena el modelo
 export async function trainModel(data, onProgress) {
   const fields = [
     "period", "transitDepth", "duration", "epoch",
     "radius", "density", "temperature", "stellarRad", "stellarTemp"
   ];
 
-  const featureArrays = fields.map(f => normalizeFeature(data.map(d => d[f])));
-  const features = data.map((_, i) => featureArrays.map(fArr => fArr[i]));
+  // Calcular min y max de cada feature
+  const featureStats = {};
+  fields.forEach(f => {
+    const arr = data.map(d => d[f]);
+    featureStats[f] = { min: Math.min(...arr), max: Math.max(...arr) };
+  });
+
+  // Normalizar features
+  const features = data.map(d =>
+    fields.map(f => normalizeValue(d[f], featureStats[f].min, featureStats[f].max))
+  );
   const labels = data.map(d => d.isExoplanet);
 
   const xs = tf.tensor2d(features);
   const ys = tf.tensor2d(labels, [labels.length, 1]);
 
-  // Calcular pesos de clase (para dataset desbalanceado)
+  // Pesos de clase
   const numPos = labels.filter(x => x === 1).length;
   const numNeg = labels.length - numPos;
   const total = labels.length;
@@ -29,9 +37,10 @@ export async function trainModel(data, onProgress) {
     1: total / (2 * numPos),
   };
 
+  // Crear modelo
   const model = tf.sequential({
     layers: [
-      tf.layers.dense({ inputShape: [9], units: 128, activation: "relu" }),
+      tf.layers.dense({ inputShape: [fields.length], units: 128, activation: "relu" }),
       tf.layers.dropout({ rate: 0.3 }),
       tf.layers.dense({ units: 64, activation: "relu" }),
       tf.layers.dropout({ rate: 0.3 }),
@@ -46,6 +55,7 @@ export async function trainModel(data, onProgress) {
     metrics: ["accuracy"],
   });
 
+  // Entrenar modelo
   await model.fit(xs, ys, {
     epochs: 150,
     batchSize: 64,
@@ -65,38 +75,42 @@ export async function trainModel(data, onProgress) {
     },
   });
 
+  // Guardar modelo y featureStats
   await model.save("localstorage://exoplanet-model");
+  localStorage.setItem("featureStats", JSON.stringify(featureStats));
+
   xs.dispose();
   ys.dispose();
-  console.log("✅ Modelo entrenado con normalización + class weights");
+
   return model;
 }
 
-
+// Cargar modelo
 export async function loadModel() {
   try {
     const model = await tf.loadLayersModel("localstorage://exoplanet-model");
-    console.log("📦 Modelo cargado desde localStorage");
+    console.log("📦 Model loaded from localStorage");
     return model;
   } catch {
-    console.log("⚠️ No hay modelo guardado, entrena uno nuevo");
+    console.log("⚠️ are no model found in localStorage");
     return null;
   }
 }
 
-// Predice si un nuevo dato es un exoplaneta
-export async function predictExoplanet(model, newData) {
-  const input = tf.tensor2d([[
-    newData.dec / 100,
-    newData.density / 10,
-    newData.duration / 10,
-    newData.epoch / 1000,
-    newData.period / 1000,
-    newData.ra / 360
-  ]]);
+// Predecir nuevo planeta
+export async function predictExoplanet(model, planet) {
+  const featureStats = JSON.parse(localStorage.getItem("featureStats"));
+  if (!featureStats) {
+    throw new Error("⚠️ No se encontró featureStats. Entrena primero el modelo.");
+  }
 
+  const inputArray = Object.keys(featureStats).map(f =>
+    normalizeValue(planet[f], featureStats[f].min, featureStats[f].max)
+  );
+
+  const input = tf.tensor2d([inputArray]);
   const prediction = model.predict(input);
   const result = (await prediction.data())[0];
 
-  return result > 0.5 ? "Exoplaneta probable 🌍" : "No exoplaneta ❌";
+  return result > 0.5 ? true : false;
 }

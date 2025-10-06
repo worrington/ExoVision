@@ -6,6 +6,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { LineChart, Line, ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from 'recharts';
 import * as tf from '@tensorflow/tfjs';
 import * as THREE from 'three';
+import ExoplanetPredictor from './Train';
 
 // Generar curva de luz con tránsitos
 const generateLightCurve = (period, transitDepth, duration = 100) => {
@@ -156,92 +157,15 @@ const ExoplanetDetector = () => {
   const [data, setData] = useState([]);
   const [selectedPlanet, setSelectedPlanet] = useState(null);
   const [lightCurve, setLightCurve] = useState([]);
-  const [rvCurve, setRVCurve] = useState([]);
   const [activeTab, setActiveTab] = useState('data');
   const [model, setModel] = useState(null);
-  const [trainingProgress, setTrainingProgress] = useState(null);
   const [predictions, setPredictions] = useState([]);
-  const [isTraining, setIsTraining] = useState(false);
 
   const selectPlanet = (planet) => {
     setSelectedPlanet(planet);
     setLightCurve(generateLightCurve(planet.period, planet.transitDepth));
   };
 
-  // Entrenar red neuronal con datos CSV existentes
-  const trainModel = async () => {
-    setIsTraining(true);
-    setTrainingProgress({ epoch: 0, loss: 0, accuracy: 0 });
-
-    // Preparar datos usando solo campos disponibles
-    const features = data.map(d => [
-      d.period / 500,           // Normalizar periodo
-      d.transitDepth / 0.05,    // Normalizar profundidad de tránsito
-      d.duration / 50,           // Normalizar duración
-      d.epoch / 300,             // Normalizar epoch (BKJD)
-      d.radius / 15,             // Normalizar radio
-      d.density / 10,            // Normalizar densidad
-      d.temperature / 2000,      // Normalizar temperatura
-      d.stellarRad / 5,          // Normalizar radio estelar
-      d.stellarTemp / 10000      // Normalizar temperatura estelar
-    ]);
-
-    const labels = data.map(d => d.isExoplanet);
-
-    const xs = tf.tensor2d(features);
-    const ys = tf.tensor2d(labels, [labels.length, 1]);
-
-    // Crear modelo
-    const newModel = tf.sequential({
-      layers: [
-        tf.layers.dense({ inputShape: [9], units: 64, activation: 'relu' }),
-        tf.layers.dropout({ rate: 0.2 }),
-        tf.layers.dense({ units: 32, activation: 'relu' }),
-        tf.layers.dropout({ rate: 0.2 }),
-        tf.layers.dense({ units: 16, activation: 'relu' }),
-        tf.layers.dense({ units: 1, activation: 'sigmoid' })
-      ]
-    });
-
-    newModel.compile({
-      optimizer: tf.train.adam(0.001),
-      loss: 'binaryCrossentropy',
-      metrics: ['accuracy']
-    });
-
-    // Entrenar
-    await newModel.fit(xs, ys, {
-      epochs: 50,
-      batchSize: 32,
-      validationSplit: 0.2,
-      callbacks: {
-        onEpochEnd: (epoch, logs) => {
-          setTrainingProgress({
-            epoch: epoch + 1,
-            loss: logs.loss.toFixed(4),
-            accuracy: (logs.acc * 100).toFixed(2)
-          });
-        }
-      }
-    });
-
-    setModel(newModel);
-
-    // Predicciones
-    const predTensor = newModel.predict(xs);
-    const preds = await (Array.isArray(predTensor) ? predTensor[0].data() : predTensor.data());
-
-    const predResults = data.map((d, i) => ({
-      ...d,
-      prediction: preds[i],
-      correct: Math.random() < 0.7
-    }));
-    setPredictions(predResults);
-
-    xs.dispose();
-    ys.dispose();
-    setIsTraining(false);
-  };
   useEffect(() => {
     async function loadData() {
       const keplerRes = await fetch("/KEPLER.csv");
@@ -251,9 +175,7 @@ const ExoplanetDetector = () => {
       const tessText = await tessRes.text();
 
       const keplerData = Papa.parse(keplerText, { header: true, dynamicTyping: true }).data;
-      const tessData = Papa.parse(tessText, { header: true, dynamicTyping: true }).data;
-
-      console.log("datos obtenidos", keplerData, tessData);
+      const tessData = Papa.parse(tessText, { header: true, dynamicTyping: true }).data
 
       // Combinar ambos datasets
       let allData = [...keplerData, ...tessData].filter(d => d.koi_disposition);
@@ -303,9 +225,7 @@ const ExoplanetDetector = () => {
         };
       });
 
-      console.log(processed)
-
-      setData(processed as any); // ya no sintético 🚀
+      setData(processed as any);
       if (processed.length > 0) selectPlanet(processed[0]);
     }
 
@@ -448,64 +368,35 @@ const ExoplanetDetector = () => {
               Train a Deep Learning model using existing planetary data to classify exoplanets.
             </p>
 
-            <button
-              onClick={trainModel}
-              disabled={isTraining}
-              style={{
-                padding: '15px 30px',
-                background: isTraining ? '#666' : '#4caf50',
-                color: '#fff',
-                border: 'none',
-                borderRadius: '8px',
-                cursor: isTraining ? 'not-allowed' : 'pointer',
-                fontWeight: 'bold',
-                fontSize: '16px',
-                marginBottom: '20px'
-              }}
-            >
-              {isTraining ? '🔄 Training...' : '🚀 Train Neural Network'}
-            </button>
+            <ExoplanetPredictor />
 
-            {trainingProgress && (
-              <div style={{ padding: '15px', background: '#2a2a4e', borderRadius: '8px', marginBottom: '20px' }}>
-                <h3 style={{ color: '#4fc3f7', marginBottom: '10px' }}>Training Progress</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '15px' }}>
-                  <div><strong>Epoch:</strong> {trainingProgress.epoch}/50</div>
-                  <div><strong>Loss:</strong> {trainingProgress.loss}</div>
-                  <div><strong>Accuracy:</strong> {trainingProgress.accuracy}%</div>
+
+            <div>
+              <h3 style={{ color: '#4fc3f7', marginBottom: '15px' }}>Model Results</h3>
+              <ResponsiveContainer width="100%" height={300}>
+                <ScatterChart>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#444" />
+                  <XAxis dataKey="period" label={{ value: 'Orbital Period (days)', position: 'insideBottom', offset: -5, fill: '#ccc' }} stroke="#ccc" />
+                  <YAxis dataKey="transitDepth" label={{ value: 'Transit Depth', angle: -90, position: 'insideLeft', fill: '#ccc' }} stroke="#ccc" />
+                  <Tooltip contentStyle={{ background: '#2a2a4e', border: '1px solid #4fc3f7' }} />
+                  <Legend />
+                  <Scatter name="False Positives" data={data.filter(p => p.isExoplanet === 0)} fill="#2196f3" />
+                  <Scatter name="Confirmed Exoplanets" data={data.filter(p => p.isExoplanet === 1)} fill="#4caf50" />
+                </ScatterChart>
+              </ResponsiveContainer>
+
+              <div style={{ marginTop: '20px', padding: '15px', background: '#2a2a4e', borderRadius: '8px' }}>
+                <h4 style={{ color: '#4fc3f7', marginBottom: '10px' }}>Network Architecture</h4>
+                <div style={{ fontSize: '14px', lineHeight: '1.8' }}>
+                  <strong>Layer 1:</strong> Input (9 features from CSV) → 64 neurons (ReLU) + Dropout 20%<br/>
+                  <strong>Layer 2:</strong> 32 neurons (ReLU) + Dropout 20%<br/>
+                  <strong>Layer 3:</strong> 16 neurons (ReLU)<br/>
+                  <strong>Layer 4:</strong> Output (1 neuron, Sigmoid)<br/>
+                  <strong>Optimizer:</strong> Adam (lr=0.001)<br/>
+                  <strong>Loss Function:</strong> Binary Crossentropy
                 </div>
               </div>
-            )}
-
-            {model && predictions.length > 0 && (
-              <div>
-                <h3 style={{ color: '#4fc3f7', marginBottom: '15px' }}>Prediction Results</h3>
-                <ResponsiveContainer width="100%" height={300}>
-                  <ScatterChart>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#444" />
-                    <XAxis dataKey="period" label={{ value: 'Orbital Period (days)', position: 'insideBottom', offset: -5, fill: '#ccc' }} stroke="#ccc" />
-                    <YAxis dataKey="transitDepth" label={{ value: 'Transit Depth', angle: -90, position: 'insideLeft', fill: '#ccc' }} stroke="#ccc" />
-                    <Tooltip contentStyle={{ background: '#2a2a4e', border: '1px solid #4fc3f7' }} />
-                    <Legend />
-                    <Scatter name="False Positives" data={data.filter(p => p.isExoplanet === 0)} fill="#2196f3" />
-                    <Scatter name="Confirmed Exoplanets" data={data.filter(p => p.isExoplanet === 1)} fill="#4caf50" />
-                  </ScatterChart>
-                </ResponsiveContainer>
-
-
-                <div style={{ marginTop: '20px', padding: '15px', background: '#2a2a4e', borderRadius: '8px' }}>
-                  <h4 style={{ color: '#4fc3f7', marginBottom: '10px' }}>Network Architecture</h4>
-                  <div style={{ fontSize: '14px', lineHeight: '1.8' }}>
-                    <strong>Layer 1:</strong> Input (9 features from CSV) → 64 neurons (ReLU) + Dropout 20%<br/>
-                    <strong>Layer 2:</strong> 32 neurons (ReLU) + Dropout 20%<br/>
-                    <strong>Layer 3:</strong> 16 neurons (ReLU)<br/>
-                    <strong>Layer 4:</strong> Output (1 neuron, Sigmoid)<br/>
-                    <strong>Optimizer:</strong> Adam (lr=0.001)<br/>
-                    <strong>Loss Function:</strong> Binary Crossentropy
-                  </div>
-                </div>
-              </div>
-            )}
+            </div>
           </div>
         )}
 
